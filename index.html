@@ -102,9 +102,10 @@ input.err,select.err{border-color:var(--bad)}
 /* The admin portal packs its Apps Script address into every link it makes, so
    this page needs no setting of its own. ENDPOINT is only a fallback for links
    made before that address was saved — leave it empty. */
-const ENDPOINT = "";
+const ENDPOINT = "https://script.google.com/macros/s/AKfycbw3FuWSkYogjwK7_OwIWpCDVmD5iVwf_VB0B0j1v_TwU1iXTq4z-F8LGOcQgGkZjuDpCg/exec";
 
-/* Where confirmations are sent and school logos are read from. */
+/* Where confirmations are sent, and where events and logos are read from.
+   A short link has no room to carry it, so it lives here. */
 const api = () => ((EVENT && EVENT.api) || ENDPOINT || "").trim();
 
 const SPORTS = ["Football","Men's Basketball","Men's Soccer","Men's Tennis","Men's Hockey",
@@ -142,21 +143,40 @@ function readEvent(){
   try{
     const b64 = q.replace(/-/g,"+").replace(/_/g,"/");
     const json = decodeURIComponent(escape(atob(b64 + "===".slice((b64.length+3)%4))));
-    const o = JSON.parse(json);
-    return { name:o.n||"", school:o.s||"", date:o.d||"", time:o.t||"", location:o.l||"",
-             intro:o.i||"", c1:o.a||"#0D0D0D", c2:o.b||"#9A9A9A", code:o.c||"",
-             api:o.k||"" };
+    return unpack(JSON.parse(json));
   }catch(e){ return null; }
 }
 
-const EVENT = readEvent();
+function unpack(o){
+  return { name:o.n||"", school:o.s||"", date:o.d||"", time:o.t||"", location:o.l||"",
+           intro:o.i||"", c1:o.a||"#0D0D0D", c2:o.b||"#9A9A9A", code:o.c||"",
+           api:o.k||"" };
+}
+
+/* "?c=<code>" is the short link: the event is fetched, not carried.
+   "?e=<packed>" is the older long link, still honoured. */
+const SHORT = new URLSearchParams(location.search).get("c") || "";
+let EVENT = readEvent();
 const page = $("#page");
 
-if(!EVENT || !EVENT.name){
+function invalid(){
+  page.innerHTML = "";
   page.appendChild(el("div",{class:"blank"},[
     el("h1",{text:"This link isn’t valid"}),
     el("p",{style:"margin:0",text:"Check with your Scout contact for a current attendance link."})
   ]));
+}
+
+if(SHORT){
+  page.appendChild(el("div",{class:"blank"},[el("p",{style:"margin:0",text:"Loading…"})]));
+  callService({event:SHORT}, 25000).then(out=>{
+    if(!out || !out.ok || !out.event || !out.event.n) return invalid();
+    EVENT = unpack(out.event);
+    page.innerHTML = "";
+    render();
+  }).catch(()=>invalid());
+} else if(!EVENT || !EVENT.name){
+  invalid();
 } else {
   render();
 }
