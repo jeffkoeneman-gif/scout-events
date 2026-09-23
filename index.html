@@ -65,6 +65,7 @@ input.err,select.err{border-color:var(--bad)}
 .submit:hover{opacity:.88}
 .submit:disabled{opacity:.45;cursor:not-allowed}
 .alert{border-radius:var(--r);padding:12px 14px;font-size:13px;background:var(--bad-bg);color:var(--bad);margin-top:4px}
+.alert .detail{margin-top:6px;font-size:12px;opacity:.75}
 
 .foot{padding:16px 24px 20px;border-top:1px solid var(--line);display:flex;align-items:center;
   justify-content:space-between;gap:12px;flex-wrap:wrap}
@@ -287,42 +288,83 @@ function render(){
     };
 
     try{
-      const post = api();
-      if(post){
-        /* text/plain keeps this a simple request, so Apps Script answers
-           without a CORS preflight it cannot reply to */
-        const res = await fetch(post,{
-          method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"},
-          body: JSON.stringify(rec)
-        });
-        const out = await res.json().catch(()=>({ok:res.ok}));
-        if(!out.ok) throw new Error(out.error||("HTTP "+res.status));
+      if(api()){
+        const out = await callService({save:JSON.stringify(rec)}, 60000);
+        if(!out || !out.ok) throw new Error((out && out.error) || "refused");
       }
       showDone(rec);
     }catch(err){
       btn.disabled=false; btn.textContent="Confirm my attendance";
-      alert.textContent = "That didn’t go through. Check your connection and try once more.";
+      alert.innerHTML = "";
+      alert.appendChild(el("div",{text:"That didn’t go through. Try once more — "+
+        "if it keeps failing, tell your Scout contact."}));
+      /* the same failure, in the words whoever set this up will need */
+      alert.appendChild(el("div",{class:"detail",text:{
+        "unexpected-reply":"Setup: the service replied with something else. Redeploy the script "+
+                           "as a new version, with Who has access set to Anyone.",
+        "unreachable"     :"Setup: the service didn’t answer as expected. Check the address, redeploy the script as a new version, and set Who has access to Anyone.",
+        "timeout"         :"Setup: the service took too long to answer.",
+        "no service"      :"Setup: no service address is saved in the admin portal."
+      }[err.message] || ("Setup: "+err.message)}));
       alert.hidden = false;
     }
+  });
+}
+
+/* Every call to the service goes through a script tag rather than fetch.
+   A Google web app answers from a redirected address that carries no
+   cross-origin headers, so a fetch can send the request but never read the
+   reply — which looked exactly like a failure even when the row was saved.
+   A script tag has no such rule, and the service names our callback. */
+function callService(params, ms){
+  const url = api();
+  return new Promise((resolve,reject)=>{
+    if(!url){ reject(new Error("no service")); return; }
+    const cb = "scout_" + Math.random().toString(36).slice(2,10);
+    const s  = document.createElement("script");
+    let done = false;
+    const timer = setTimeout(()=>finish(new Error("timeout")), ms||45000);
+    function finish(err,out){
+      if(done) return; done = true;
+      clearTimeout(timer);
+      try{ delete window[cb]; }catch(e){ window[cb] = undefined; }
+      if(s.parentNode) s.parentNode.removeChild(s);
+      err ? reject(err) : resolve(out);
+    }
+    window[cb] = out => finish(null,out);
+    s.onerror = () => finish(new Error("unreachable"));
+    /* The callback runs while the script is being read, so by the time load
+       fires we are already done. Still here means the service replied with
+       something else — a sign-in page, or an older deployment that doesn't
+       know this request. Worth saying so, rather than waiting out the clock. */
+    s.onload  = () => finish(new Error("unexpected-reply"));
+    const qs = Object.keys(params)
+      .map(k=>encodeURIComponent(k)+"="+encodeURIComponent(params[k])).join("&");
+    s.src = url + (url.indexOf("?")<0 ? "?" : "&") + qs + "&cb=" + cb;
+    document.head.appendChild(s);
   });
 }
 
 /* One small request, cached for the tab, so a second visit is instant.
    The image arrives as data, so nothing on this page links out to Drive. */
 async function loadLogo(school, img, holder, nameTag){
-  const url = api(); if(!url) return;
+  if(!api()) return;
   const key = "scout.logo." + slug(school);
   const show = uri => { img.addEventListener("load",()=>{ holder.hidden=false; nameTag.hidden=true; });
                         img.src = uri; };
   try{ const hit = sessionStorage.getItem(key); if(hit){ show(hit); return; } }catch(e){}
   try{
-    const res = await fetch(url + (url.indexOf("?")<0 ? "?" : "&") + "logo=" + encodeURIComponent(slug(school)));
-    const out = await res.json();
+    const out = await callService({logo:slug(school)}, 20000);
     if(!out || !out.ok || !out.data) return;
     const uri = "data:" + (out.mime || "image/png") + ";base64," + out.data;
     try{ sessionStorage.setItem(key, uri); }catch(e){}
     show(uri);
-  }catch(e){ /* no logo, no problem — the school name is already on screen */ }
+  }catch(e){
+    /* no logo, no problem — the school name is already on screen. Said out
+       loud in the console, because a logo missing everywhere at once usually
+       means the service itself isn't answering. */
+    if(window.console) console.warn("Scout: logo request failed —", e.message);
+  }
 }
 
 function showDone(r){
