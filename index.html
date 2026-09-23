@@ -98,7 +98,13 @@ input.err,select.err{border-color:var(--bad)}
    Apps Script. Until then the form validates and thanks people but
    saves nothing — useful for checking the look, useless for a real session.
    ──────────────────────────────────────────────────────────────── */
-const ENDPOINT = "";   // <-- paste your Apps Script /exec URL here
+/* The admin portal packs its Apps Script address into every link it makes, so
+   this page needs no setting of its own. ENDPOINT is only a fallback for links
+   made before that address was saved — leave it empty. */
+const ENDPOINT = "";
+
+/* Where confirmations are sent and school logos are read from. */
+const api = () => ((EVENT && EVENT.api) || ENDPOINT || "").trim();
 
 const SPORTS = ["Football","Men's Basketball","Men's Soccer","Men's Tennis","Men's Hockey",
                 "Women's Basketball","Women's Soccer","Women's Tennis","Women's Hockey","Other"];
@@ -137,7 +143,8 @@ function readEvent(){
     const json = decodeURIComponent(escape(atob(b64 + "===".slice((b64.length+3)%4))));
     const o = JSON.parse(json);
     return { name:o.n||"", school:o.s||"", date:o.d||"", time:o.t||"", location:o.l||"",
-             intro:o.i||"", c1:o.a||"#0D0D0D", c2:o.b||"#9A9A9A", code:o.c||"" };
+             intro:o.i||"", c1:o.a||"#0D0D0D", c2:o.b||"#9A9A9A", code:o.c||"",
+             api:o.k||"" };
   }catch(e){ return null; }
 }
 
@@ -171,17 +178,15 @@ function render(){
   if(when) htext.appendChild(el("div",{class:"when",text:when}));
   hero.appendChild(htext);
 
-  /* try PNG, then SVG, then fall back to the school name already on screen */
+  /* the logo comes from the Apps Script, which reads it out of Drive — nothing
+     is stored with this page. Until it answers, the school name holds the spot;
+     if it never answers, the name simply stays. */
   if(EVENT.school){
     const holder = el("div",{class:"heromark",hidden:"hidden"});
     const img = el("img",{alt:EVENT.school});
-    let tried = 0;
-    const sources = ["logos/"+slug(EVENT.school)+".png","logos/"+slug(EVENT.school)+".svg"];
-    img.addEventListener("load",()=>{ holder.hidden=false; nameTag.hidden=true; });
-    img.addEventListener("error",()=>{ tried++; if(tried<sources.length) img.src=sources[tried]; });
-    img.src = sources[0];
     holder.appendChild(img);
     hero.appendChild(holder);
+    loadLogo(EVENT.school, img, holder, nameTag);
   }
   card.appendChild(hero);
   card.appendChild(el("div",{class:"stripe"}));
@@ -282,10 +287,11 @@ function render(){
     };
 
     try{
-      if(ENDPOINT){
+      const post = api();
+      if(post){
         /* text/plain keeps this a simple request, so Apps Script answers
            without a CORS preflight it cannot reply to */
-        const res = await fetch(ENDPOINT,{
+        const res = await fetch(post,{
           method:"POST", headers:{"Content-Type":"text/plain;charset=utf-8"},
           body: JSON.stringify(rec)
         });
@@ -299,6 +305,24 @@ function render(){
       alert.hidden = false;
     }
   });
+}
+
+/* One small request, cached for the tab, so a second visit is instant.
+   The image arrives as data, so nothing on this page links out to Drive. */
+async function loadLogo(school, img, holder, nameTag){
+  const url = api(); if(!url) return;
+  const key = "scout.logo." + slug(school);
+  const show = uri => { img.addEventListener("load",()=>{ holder.hidden=false; nameTag.hidden=true; });
+                        img.src = uri; };
+  try{ const hit = sessionStorage.getItem(key); if(hit){ show(hit); return; } }catch(e){}
+  try{
+    const res = await fetch(url + (url.indexOf("?")<0 ? "?" : "&") + "logo=" + encodeURIComponent(slug(school)));
+    const out = await res.json();
+    if(!out || !out.ok || !out.data) return;
+    const uri = "data:" + (out.mime || "image/png") + ";base64," + out.data;
+    try{ sessionStorage.setItem(key, uri); }catch(e){}
+    show(uri);
+  }catch(e){ /* no logo, no problem — the school name is already on screen */ }
 }
 
 function showDone(r){
